@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import time
+import random
 
 from bs4 import BeautifulSoup
 
@@ -449,6 +450,152 @@ class Genius(API, PublicAPI):
         if self.verbose:
             print('Done.')
         return song
+
+    def search_random_song_from_artist(self, artist_name, max_songs=None,
+                      sort='popularity', per_page=20,
+                      get_full_info=True,
+                      allow_name_change=True,
+                      artist_id=None,
+                      include_features=False,
+                      ):
+        """Searches for a specific artist and gets their songs.
+
+        This method looks for the artist by the name or by the
+        ID if it's provided in ``artist_id``. It returrns an
+        :class:`Artist <types.Artist>` object if the search is successful.
+        If :obj:`allow_name_change` is True, the name of the artist is changed to the
+        artist name on Genius.
+
+        Args:
+            artist_name (:obj:`str`): Name of the artist to search for.
+            max_songs (obj:`int`, optional): Maximum number of songs to search for.
+            sort (:obj:`str`, optional): Sort by 'title' or 'popularity'.
+            per_page (:obj:`int`, optional): Number of results to return
+                per search page. It can't be more than 50.
+            get_full_info (:obj:`bool`, optional): Get full info for each song (slower).
+            allow_name_change (:obj:`bool`, optional): If True, search attempts to
+                switch to intended artist name.
+            artist_id (:obj:`int`, optional): Allows user to pass an artist ID.
+            include_features (:obj:`bool`, optional): If True, includes tracks
+                featuring the artist.
+
+        Returns:
+            :class:`Artist <types.Artist>`: Artist object containing
+            artist's songs.
+
+        Examples:
+            .. code:: python
+
+                # printing the lyrics of all of the artist's songs
+                genius = Genius(token)
+                artist = genius.search_artist('Andy Shauf')
+                for song in artist.songs:
+                    print(song.lyrics)
+
+            Visit :class:`Aritst <types.Artist>` for more examples.
+        """
+        def find_artist_id(search_term):
+            """Finds the ID of the artist, returns the first
+            result if none match the search term or returns
+            ‍None‍‍ if there were not results
+
+            """
+            if self.verbose:
+                print('Searching for songs by {0}...\n'.format(search_term))
+
+            # Perform a Genius API search for the artist
+            found_artist = None
+            response = self.search_all(search_term)
+            found_artist = self._get_item_from_search_response(response,
+                                                               search_term,
+                                                               type_="artist",
+                                                               result_type="name")
+
+            # Exit the search if we couldn't find an artist by the given name
+            if not found_artist:
+                if self.verbose:
+                    print("No results found for '{a}'.".format(a=search_term))
+                return None
+            # Assume the top search result is the intended artist
+            return found_artist['id']
+
+        # Get the artist ID (or use the one supplied)
+        artist_id = artist_id if artist_id else find_artist_id(artist_name)
+        if not artist_id:
+            return None
+
+        artist_info = self.artist(artist_id)['artist']
+        found_name = artist_info['name']
+        if found_name != artist_name and allow_name_change:
+            if self.verbose:
+                print("Changing artist name to '{a}'".format(
+                    a=safe_unicode(found_name)))
+            artist_name = found_name
+
+        # Create the Artist object
+        artist = Artist(self, artist_info)
+        # Download each song by artist, stored as Song objects in Artist object
+        page = 1
+        reached_max_songs = True if max_songs == 0 else False
+        reached_max_pages = False
+        found_one_valid_song = False
+        songs = []
+        while not reached_max_pages:
+            songs_on_page = self.artist_songs(artist_id=artist_id,
+                                              per_page=per_page,
+                                              page=page,
+                                              sort=sort,
+                                              )
+            page = songs_on_page['next_page']
+            songs += songs_on_page['songs']
+            if page is None:
+                reached_max_pages = True
+
+        total_songs = len(songs)
+        while not found_one_valid_song:
+            song_info = songs[random.randint(0, total_songs)]
+            # Check if song is valid (e.g. contains lyrics)
+            if self.skip_non_songs and not self._result_is_lyrics(song_info):
+                valid = False
+            else:
+                valid = True
+
+            # Reject non-song results (e.g. Linear Notes, Tracklists, etc.)
+            if not valid:
+                if self.verbose:
+                    s = song_info['title']
+                    print('"{s}" is not valid. Skipping.'.format(
+                        s=safe_unicode(s)))
+                continue
+
+            # Create the Song object from lyrics and metadata
+            if song_info['lyrics_state'] == 'complete':
+                lyrics = self.lyrics(song_url=song_info['url'])
+            else:
+                lyrics = ""
+            if get_full_info:
+                new_info = self.song(song_info['id'])['song']
+                song_info.update(new_info)
+            song = Song(self, song_info, lyrics)
+
+            # Attempt to add the Song to the Artist
+            result = artist.add_song(song, verbose=False,
+                                        include_features=include_features)
+            if result is not None and self.verbose:
+                print('Song {n}: "{t}"'.format(n=artist.num_songs,
+                                                t=safe_unicode(song.title)))
+
+            # Exit search if the max number of songs has been met
+            found_one_valid_song = True
+            if found_one_valid_song:
+                if self.verbose:
+                    print(('\nReached user-specified song limit ({m}).'
+                            .format(m=max_songs)))
+                break
+
+        if self.verbose:
+            print('Done. Found {n} songs.'.format(n=artist.num_songs))
+        return artist
 
     def search_artist(self, artist_name, max_songs=None,
                       sort='popularity', per_page=20,
