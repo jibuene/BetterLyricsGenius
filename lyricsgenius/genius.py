@@ -536,7 +536,6 @@ class Genius(API, PublicAPI):
         artist = Artist(self, artist_info)
         # Download each song by artist, stored as Song objects in Artist object
         page = 1
-        reached_max_songs = True if max_songs == 0 else False
         reached_max_pages = False
         found_one_valid_song = False
         songs = []
